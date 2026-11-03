@@ -1,0 +1,252 @@
+﻿@{
+    var originUrl = $"{Context.Request.Scheme}://{Context.Request.Host}{Context.Request.PathBase}";
+    var document = originUrl + "/digital-signature.pdf";
+}
+
+<button onclick="signDocument()">Sign document</button>
+<ejs-message id="msg_success" visible="false" severity="Success"></ejs-message>
+<ejs-message id="msg_warning" visible="false" severity="Warning"></ejs-message>
+<ejs-message id="msg_error" visible="false" severity="Error"></ejs-message>
+<ejs-pdfviewer id="pdfViewer" style="height:600px" documentPath="@document" toolbarSettings="@(new Syncfusion.EJ2.PdfViewer.PdfViewerToolbarSettings { ShowTooltip = true, ToolbarItems = ("OpenOption UndoRedoTool PageNavigationTool MagnificationTool PanTool SelectionTool CommentTool SubmitForm AnnotationEditTool RedactionEditTool FormDesignerEditTool SearchOption PrintOption DownloadOption") })" documentLoad="documentLoad">
+</ejs-pdfviewer>
+
+<script type="text/javascript">
+    var documentData = null;
+    var certificateData = null;
+    var msgSuccess;
+    var msgWarning;
+    var msgError;
+
+    function documentLoad() {
+
+        var viewer = document.getElementById('pdfViewer').ej2_instances[0];
+
+        msgSuccess = document.getElementById('msg_success').ej2_instances[0];
+        msgWarning = document.getElementById('msg_warning').ej2_instances[0];
+        msgError = document.getElementById('msg_error').ej2_instances[0];
+
+        viewer.toolbar.showRedactionToolbar(true);
+
+        validateSignature();
+    }
+
+    function validateSignature() {
+
+        if (!documentData || !certificateData) {
+            return;
+        }
+
+        try {
+
+            const pdfDocument = new ej.pdf.PdfDocument(documentData);
+
+            const field = pdfDocument.form.fieldAt(0);
+
+           var result = field.validateSignature();
+
+            msgSuccess.visible = false;
+            msgWarning.visible = false;
+            msgError.visible = false;
+
+            if (result.isSignatureValid &&
+                !result.isDocumentModified) {
+
+                msgSuccess.content =
+                    "Digital signature validated successfully.";
+
+                msgSuccess.visible = true;
+            }
+            else if (result.isSignatureValid &&
+                     result.isDocumentModified) {
+
+                msgWarning.content =
+                    "The signature is valid, but the document was modified after signing.";
+
+                msgWarning.visible = true;
+            }
+            else {
+
+                msgError.content =
+                    "Digital signature validation failed.";
+
+                msgError.visible = true;
+            }
+
+            console.log(result);
+
+            pdfDocument.destroy();
+        }
+        catch (e) {
+
+            msgError.content =
+                "Unable to validate digital signature.";
+
+            msgError.visible = true;
+
+            console.error(e);
+        }
+    }
+
+    function signDocument() {
+        try {
+            var viewer = document.getElementById('pdfViewer').ej2_instances[0];
+            viewer.saveAsBlob().then(function(data) {
+                var fileReader = new FileReader();
+                fileReader.readAsDataURL(data);
+                fileReader.onload = function(event) {
+                    var pdfData = event.target ? event.target.result : '';
+                    if (!pdfData) return;
+
+                    var jsonObject = getRequestBody(pdfData);
+                    var base64 = pdfData.split(',')[1];
+                    var document = new ej.pdf.PdfDocument(base64);
+                    var page = document.getPage(0);
+
+                    // Access the first form field (signature field)
+                    var form = document.form;
+                    var signField = form.fieldAt(0);
+
+                    readFromResources('localhost.pfx').then(function(certData) {
+                        certificateData = certData;
+                        // Create digital signature using CMS standard and SHA-256
+                        var sign = ej.pdf.PdfSignature.create(certData, 'Syncfusion@123', {
+                            cryptographicStandard: ej.pdf.CryptographicStandard.cms,
+                            digestAlgorithm: ej.pdf.DigestAlgorithm.sha256,
+                        });
+                        var fieldBounds = signField.bounds;
+
+                        var bounds = {
+                            x: fieldBounds.x,
+                            y: fieldBounds.y,
+                            width: 250,
+                            height: 80
+                        };
+
+                        var annot = new ej.pdf.PdfRubberStampAnnotation(bounds);
+
+                        readFromResources('signature.png').then(function (imageData) {
+
+                        var image = new ej.pdf.PdfBitmap(imageData);
+
+                        var graphics = annot.appearance.normal.graphics;
+
+                        // Signature image
+                        graphics.drawImage(image, {
+                            x: 5,
+                            y: 5,
+                            width: 80,
+                            height: 70
+                        });
+
+                        // Label
+                        graphics.drawString(
+                            "Digitally signed by",
+                            new ej.pdf.PdfStandardFont(
+                                ej.pdf.PdfFontFamily.helvetica,
+                                7
+                            ),
+                            {
+                                x: 5,
+                                y: 50,
+                                width: 150,
+                                height: 10
+                            }
+                        );
+
+                        // Signer name
+                        graphics.drawString(
+                            jsonObject.signerName,
+                            new ej.pdf.PdfStandardFont(
+                                ej.pdf.PdfFontFamily.helvetica,
+                                8,
+                                ej.pdf.PdfFontStyle.bold
+                            ),
+                            {
+                                x: 5,
+                                y: 62,
+                                width: 200,
+                                height: 12
+                            }
+                        );
+
+                        // Date
+                        graphics.drawString(
+                            jsonObject.date,
+                            new ej.pdf.PdfStandardFont(
+                                ej.pdf.PdfFontFamily.helvetica,
+                                7
+                            ),
+                            {
+                                x: 5,
+                                y: 72,
+                                width: 240,
+                                height: 10
+                            }
+                        );
+                            annot.setAppearance(true);
+                            annot.flatten = true;
+
+                            page.annotations.add(annot);
+
+                            signField.setSignature(sign);
+
+                            documentData = document.save();
+
+                            document.destroy();
+
+                            viewer.load(documentData, "");
+                        });
+                    }).catch(function(error) {
+                        console.error('Error reading certificate:', error);
+                    });
+                };
+                fileReader.onerror = function() {
+                    console.error('Error reading blob as base64:', fileReader.error);
+                };
+            });
+        } catch (error) {
+            console.error('Error converting blob', error);
+        }
+    };
+
+    // Fetches a file from local resources and returns it as a base64 string
+    function readFromResources(fileName) {
+        return fetch('./' + fileName)
+            .then(function(response) {
+                if (!response.ok) throw new Error('Failed to load ' + fileName);
+                return response.arrayBuffer();
+            })
+            .then(function(data) {
+                var binary = '';
+                var bytes = new Uint8Array(data);
+                for (var i = 0; i < bytes.byteLength; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return window.btoa(binary);
+            });
+    }
+
+    // Builds the request body for the signing API call
+    var getRequestBody = function(pdfData) {
+
+    const now = new Date();
+
+    var jsonObject = {
+        pdfdata: pdfData,
+
+        signerName: "Syncfusion",
+
+        date: now.toLocaleString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: true
+        })
+    };
+
+    return jsonObject;
+};
+</script>
